@@ -252,6 +252,7 @@ export class TypeVarSignatureContext {
             case TypeCategory.Never:
                 return 1.0;
 
+            case TypeCategory.Intersection:
             case TypeCategory.Union: {
                 let maxScore = 0;
 

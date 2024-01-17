@@ -188,6 +188,7 @@ _T = TypeVar("_T")
 def overload(func: _F) -> _F: ...
 
 Union: _SpecialForm
+Intersection: _SpecialForm
 Generic: _SpecialForm
 # Protocol is only present in 3.8 and later, but mypy needs it unconditionally
 Protocol: _SpecialForm

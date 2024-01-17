@@ -501,7 +501,7 @@ export function mapSubtypes(type: Type, callback: (type: Type) => Type | undefin
 
                 // Do our best to retain type aliases.
                 if (newType.category === TypeCategory.Intersection) {
-                    IntersectionType.addTypeAliasSource(newType, type)
+                    IntersectionType.addTypeAliasSource(newType, type);
                 }
 
                 return newType;
@@ -961,7 +961,6 @@ export function addConditionToType(
 
         case TypeCategory.Intersection:
             return intersectTypes(type.subtypes.map((t) => addConditionToType(t, condition)));
-
     }
 }
 
@@ -1035,7 +1034,7 @@ export function transformPossibleRecursiveTypeAlias(type: Type | undefined): Typ
             return applySolvedTypeVars(unspecializedType, typeVarContext);
         }
 
-        if (isUnion(type) || isIntersection(type) && type.includesRecursiveTypeAlias) {
+        if ((isUnion(type) || isIntersection(type)) && type.includesRecursiveTypeAlias) {
             let newType = mapSubtypes(type, (subtype) => transformPossibleRecursiveTypeAlias(subtype));
 
             if (newType !== type && type.typeAliasInfo) {
@@ -2135,6 +2134,7 @@ export function setTypeArgumentsRecursive(
     }
 
     switch (destType.category) {
+        case TypeCategory.Intersection:
         case TypeCategory.Union:
             doForEachSubtype(destType, (subtype) => {
                 setTypeArgumentsRecursive(subtype, srcType, typeVarContext, recursionCount);
@@ -2988,7 +2988,7 @@ export function requiresTypeArguments(classType: ClassType) {
             'Literal',
             'Annotated',
             'TypeGuard',
-            'Intersection'
+            'Intersection',
         ];
 
         if (specialClasses.some((t) => t === (classType.aliasName || classType.details.name))) {
@@ -3082,6 +3082,7 @@ function _requiresSpecialization(type: Type, options?: RequiresSpecializationOpt
             return type.overloads.some((overload) => requiresSpecialization(overload, options, recursionCount));
         }
 
+        case TypeCategory.Intersection:
         case TypeCategory.Union: {
             return type.subtypes.some((subtype) => requiresSpecialization(subtype, options, recursionCount));
         }
@@ -3364,6 +3365,7 @@ function addDeclaringModuleNamesForType(type: Type, moduleList: string[], recurs
             break;
         }
 
+        case TypeCategory.Intersection:
         case TypeCategory.Union: {
             doForEachSubtype(type, (subtype) => {
                 addDeclaringModuleNamesForType(subtype, moduleList, recursionCount);
@@ -3621,8 +3623,8 @@ class TypeVarTransformer {
                     transformedType = intersectTypes(subtypesToCombine);
                 }
 
-                if (this.transformUnionSubtype) {
-                    return this.transformUnionSubtype(subtype, transformedType, recursionCount);
+                if (this.transformIntersectionSubtype) {
+                    return this.transformIntersectionSubtype(subtype, transformedType, recursionCount);
                 }
 
                 return transformedType;
@@ -3696,6 +3698,10 @@ class TypeVarTransformer {
     }
 
     transformUnionSubtype(preTransform: Type, postTransform: Type, recursionCount: number): Type | undefined {
+        return postTransform;
+    }
+
+    transformIntersectionSubtype(preTransform: Type, postTransform: Type, recursionCount: number): Type | undefined {
         return postTransform;
     }
 
@@ -4355,6 +4361,32 @@ class ApplySolvedTypeVarsTransformer extends TypeVarTransformer {
                     if (isUnknown(postTransform) && this._options.unknownIfNotFound) {
                         return undefined;
                     }
+                }
+            }
+        }
+
+        return postTransform;
+    }
+
+    override transformIntersectionSubtype(preTransform: Type, postTransform: Type): Type | undefined {
+        if (
+            isTypeVar(preTransform) &&
+            preTransform.scopeId !== undefined &&
+            this._typeVarContext.hasSolveForScope(preTransform.scopeId)
+        ) {
+            const signatureContext = this._typeVarContext.getSignatureContext(
+                this._activeTypeVarSignatureContextIndex ?? 0
+            );
+
+            const typeVarType = signatureContext.getTypeVarType(preTransform);
+
+            if (!typeVarType || (isTypeVar(typeVarType) && typeVarType.isInScopePlaceholder)) {
+                if (preTransform === postTransform) {
+                    return undefined;
+                }
+
+                if (isUnknown(postTransform) && this._options.unknownIfNotFound) {
+                    return undefined;
                 }
             }
         }
