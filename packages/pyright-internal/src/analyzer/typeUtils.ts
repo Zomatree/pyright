@@ -360,7 +360,7 @@ export function isTypeVarSame(type1: TypeVarType, type2: Type) {
     }
 
     // If the second type isn't a union, return false.
-    if (!isUnion(type2) || !isIntersection(type2)) {
+    if (!isUnion(type2) && !isIntersection(type2)) {
         return false;
     }
 

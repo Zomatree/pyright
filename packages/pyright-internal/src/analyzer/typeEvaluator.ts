@@ -339,6 +339,7 @@ import {
     removeFromUnion,
     removeUnbound,
 } from './types';
+import { zip } from 'lodash';
 
 interface GetTypeArgsOptions {
     isAnnotatedClass?: boolean;
@@ -22824,6 +22825,12 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 }
             }
 
+            if (isIntersection(srcType)) {
+                if (isTypeSame(destType, srcType)) {
+                    return true;
+                }
+            }
+
             // Handle the special case where both types are Self types. We'll allow
             // them to be treated as equivalent to handle certain common idioms.
             if (
@@ -23073,6 +23080,12 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 originalFlags,
                 recursionCount
             );
+        }
+
+        if (isIntersection(destType)) {
+            if (isTypeSame(destType, srcType)) {
+                return true
+            }
         }
 
         if (isNoneInstance(destType)) {
