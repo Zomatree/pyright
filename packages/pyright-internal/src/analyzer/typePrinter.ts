@@ -16,6 +16,7 @@ import {
     ClassType,
     EnumLiteral,
     FunctionType,
+    IntersectableType,
     isAnyOrUnknown,
     isClass,
     isClassInstance,
@@ -668,6 +669,130 @@ function printTypeInternal(
                 }
 
                 return `Union[${dedupedSubtypeStrings.join(', ')}]`;
+            }
+
+        case TypeCategory.Intersection: {
+                // Allocate a set that refers to subtypes in the intersection by
+                // their indices. If the index is within the set, it is already
+                // accounted for in the output.
+                const subtypeHandledSet = new Set<number>();
+
+                // Allocate another set that represents the textual representations
+                // of the subtypes in the intersection.
+                const subtypeStrings = new Set<string>();
+
+                // Start by matching possible type aliases to the subtypes.
+                if ((printTypeFlags & PrintTypeFlags.ExpandTypeAlias) === 0 && type.typeAliasSources) {
+                    for (const typeAliasSource of type.typeAliasSources) {
+                        let matchedAllSubtypes = true;
+                        let allSubtypesPreviouslyHandled = true;
+                        const indicesCoveredByTypeAlias = new Set<number>();
+
+                        for (const sourceSubtype of typeAliasSource.subtypes) {
+                            let unionSubtypeIndex = 0;
+                            let foundMatch = false;
+                            const sourceSubtypeInstance = convertToInstance(sourceSubtype);
+
+                            for (const unionSubtype of type.subtypes) {
+                                if (
+                                    isTypeSame(sourceSubtypeInstance, unionSubtype, {
+                                        typeFlagsToHonor: TypeFlags.Instance | TypeFlags.Instantiable,
+                                    })
+                                ) {
+                                    if (!subtypeHandledSet.has(unionSubtypeIndex)) {
+                                        allSubtypesPreviouslyHandled = false;
+                                    }
+                                    indicesCoveredByTypeAlias.add(unionSubtypeIndex);
+                                    foundMatch = true;
+                                    break;
+                                }
+
+                                unionSubtypeIndex++;
+                            }
+
+                            if (!foundMatch) {
+                                matchedAllSubtypes = false;
+                                break;
+                            }
+                        }
+
+                        if (matchedAllSubtypes && !allSubtypesPreviouslyHandled) {
+                            subtypeStrings.add(
+                                printTypeInternal(
+                                    typeAliasSource,
+                                    printTypeFlags,
+                                    returnTypeCallback,
+                                    uniqueNameMap,
+                                    recursionTypes,
+                                    recursionCount
+                                )
+                            );
+                            indicesCoveredByTypeAlias.forEach((index) => subtypeHandledSet.add(index));
+                        }
+                    }
+                }
+
+                const literalObjectStrings = new Set<string>();
+                const literalClassStrings = new Set<string>();
+                doForEachSubtype(type, (subtype, index) => {
+                    if (!subtypeHandledSet.has(index)) {
+                        if (isClassInstance(subtype) && subtype.literalValue !== undefined) {
+                            if (
+                                isLiteralValueTruncated(subtype) &&
+                                (printTypeFlags & PrintTypeFlags.PythonSyntax) !== 0
+                            ) {
+                                subtypeStrings.add(printLiteralValueTruncated(subtype));
+                            } else {
+                                literalObjectStrings.add(printLiteralValue(subtype));
+                            }
+                        } else if (isInstantiableClass(subtype) && subtype.literalValue !== undefined) {
+                            if (
+                                isLiteralValueTruncated(subtype) &&
+                                (printTypeFlags & PrintTypeFlags.PythonSyntax) !== 0
+                            ) {
+                                subtypeStrings.add(`type[${printLiteralValueTruncated(subtype)}]`);
+                            } else {
+                                literalClassStrings.add(printLiteralValue(subtype));
+                            }
+                        } else {
+                            subtypeStrings.add(
+                                printTypeInternal(
+                                    subtype,
+                                    printTypeFlags,
+                                    returnTypeCallback,
+                                    uniqueNameMap,
+                                    recursionTypes,
+                                    recursionCount
+                                )
+                            );
+                        }
+                    }
+                });
+
+                const dedupedSubtypeStrings: string[] = [];
+                subtypeStrings.forEach((s) => dedupedSubtypeStrings.push(s));
+
+                if (literalObjectStrings.size > 0) {
+                    const literalStrings: string[] = [];
+                    literalObjectStrings.forEach((s) => literalStrings.push(s));
+                    dedupedSubtypeStrings.push(`Literal[${literalStrings.join(', ')}]`);
+                }
+
+                if (literalClassStrings.size > 0) {
+                    const literalStrings: string[] = [];
+                    literalClassStrings.forEach((s) => literalStrings.push(s));
+                    dedupedSubtypeStrings.push(`type[Literal[${literalStrings.join(', ')}]]`);
+                }
+
+                if (dedupedSubtypeStrings.length === 1) {
+                    return dedupedSubtypeStrings[0];
+                }
+
+                const intersectionString = dedupedSubtypeStrings.join(' & ');
+                if (parenthesizeUnion) {
+                    return `(${intersectionString})`;
+                }
+                return intersectionString;
             }
 
             case TypeCategory.TypeVar: {
@@ -1393,6 +1518,7 @@ class UniqueNameMap {
                     break;
                 }
 
+                case TypeCategory.Intersection:
                 case TypeCategory.Union: {
                     doForEachSubtype(type, (subtype) => {
                         this.build(subtype, recursionTypes, recursionCount);

@@ -291,6 +291,7 @@ import {
     FunctionType,
     FunctionTypeFlags,
     InheritanceChain,
+    IntersectionType,
     LiteralValue,
     ModuleType,
     NeverType,
@@ -312,12 +313,14 @@ import {
     WildcardTypeVarScopeId,
     combineTypes,
     findSubtype,
+    intersectTypes,
     isAny,
     isAnyOrUnknown,
     isClass,
     isClassInstance,
     isFunction,
     isInstantiableClass,
+    isIntersection,
     isModule,
     isNever,
     isOverloadedFunction,
@@ -587,6 +590,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
     let objectType: Type | undefined;
     let typeClassType: Type | undefined;
     let unionClassType: Type | undefined;
+    let intersectionClassType: Type | undefined;
     let awaitableProtocolType: Type | undefined;
     let functionObj: Type | undefined;
     let tupleClassType: Type | undefined;
@@ -933,6 +937,11 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 unionClassType.details.flags |= ClassTypeFlags.SpecialFormClass;
             }
 
+            intersectionClassType = getTypesType(node, 'IntersectionType');
+            if (intersectionClassType && isClass(intersectionClassType)) {
+                intersectionClassType.details.flags |= ClassTypeFlags.SpecialFormClass;
+            }
+
             // Initialize and cache "Collection" to break a cyclical dependency
             // that occurs when resolving tuple below.
             getTypingType(node, 'Collection');
@@ -1116,7 +1125,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
 
                 // If we're expecting an instantiable type and this isn't a union operator,
                 // don't require that the two operands are also instantiable types.
-                if (expectingInstantiable && node.operator !== OperatorType.BitwiseOr) {
+                if (expectingInstantiable && node.operator !== OperatorType.BitwiseOr && node.operator !== OperatorType.BitwiseAnd) {
                     effectiveFlags &= ~EvaluatorFlags.ExpectingInstantiableType;
                 }
 
@@ -1776,6 +1785,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 return true;
             }
 
+            case TypeCategory.Intersection:
             case TypeCategory.Union: {
                 return findSubtype(type, (subtype) => canBeFalsy(subtype, recursionCount)) !== undefined;
             }
@@ -1871,6 +1881,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 return true;
             }
 
+            case TypeCategory.Intersection:
             case TypeCategory.Union: {
                 return findSubtype(type, (subtype) => canBeTruthy(subtype, recursionCount)) !== undefined;
             }
@@ -2922,6 +2933,10 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         return unionClassType ?? UnknownType.create();
     }
 
+    function getIntersectionClassType(): Type {
+        return intersectionClassType ?? UnknownType.create();
+    }
+
     function getTypingType(node: ParseNode, symbolName: string): Type | undefined {
         return (
             getTypeOfModule(node, symbolName, ['typing']) ?? getTypeOfModule(node, symbolName, ['typing_extensions'])
@@ -3186,7 +3201,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
 
     function addExpectedClassDiagnostic(type: Type, node: ParseNode) {
         const diag = new DiagnosticAddendum();
-        if (isUnion(type)) {
+        if (isUnion(type) || isIntersection(type)) {
             doForEachSubtype(type, (subtype) => {
                 if (!isEffectivelyInstantiable(subtype)) {
                     diag.addMessage(LocAddendum.typeNotClass().format({ type: printType(subtype) }));
@@ -3839,7 +3854,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         let typeChanged = false;
 
         function expandSubtype(unexpandedType: Type, isLastSubtype: boolean) {
-            let expandedType = isUnion(unexpandedType) ? unexpandedType : makeTopLevelTypeVarsConcrete(unexpandedType);
+            let expandedType = isUnion(unexpandedType) || isIntersection(unexpandedType) ? unexpandedType : makeTopLevelTypeVarsConcrete(unexpandedType);
 
             expandedType = transformPossibleRecursiveTypeAlias(expandedType);
 
@@ -3891,7 +3906,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             );
         }
 
-        if (isUnion(type)) {
+        if (isUnion(type) || isIntersection(type)) {
             const subtypes = sortSubtypes ? sortTypes(type.subtypes) : type.subtypes;
             subtypes.forEach((subtype, index) => {
                 expandSubtype(subtype, index === type.subtypes.length - 1);
@@ -3910,6 +3925,11 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         if (newType.category === TypeCategory.Union) {
             UnionType.addTypeAliasSource(newType, type);
         }
+
+        if (newType.category === TypeCategory.Intersection) {
+            IntersectionType.addTypeAliasSource(newType, type);
+        }
+
         return newType;
     }
 
@@ -5159,6 +5179,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         const isRequired = false;
         const isNotRequired = false;
         let memberAccessDeprecationInfo: MemberAccessDeprecationInfo | undefined;
+        let typeErrors: boolean | undefined;
 
         // If the base type was incomplete and unbound, don't proceed
         // because false positive errors will be generated.
@@ -5436,6 +5457,41 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 break;
             }
 
+            case TypeCategory.Intersection: {
+                for (let subtype of baseType.subtypes) {
+                    let previousSink = AnalyzerNodeInfo.getFileInfo(node).diagnosticSink.copy()
+
+                    const typeResult = getTypeOfMemberAccessWithBaseType(
+                        node,
+                        {
+                            type: subtype,
+                            isIncomplete: baseTypeResult.isIncomplete
+                        },
+                        usage,
+                        EvaluatorFlags.None
+                    );
+
+
+                    if (typeResult.typeErrors !== true) {
+                        if (typeResult.isIncomplete) {
+                            isIncomplete = true;
+                        }
+
+                        if (typeResult.memberAccessDeprecationInfo) {
+                            memberAccessDeprecationInfo = typeResult.memberAccessDeprecationInfo;
+                        }
+
+                        type = typeResult.type;
+
+                        break;
+                    } else {
+                        AnalyzerNodeInfo.getFileInfo(node).diagnosticSink = previousSink
+                    }
+                };
+
+                break;
+            }
+
             case TypeCategory.Function:
             case TypeCategory.OverloadedFunction: {
                 if (memberName === '__self__') {
@@ -5498,6 +5554,8 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                 );
             }
 
+            typeErrors = true
+
             // If this is member access on a function, use "Any" so if the
             // reportFunctionMemberAccess rule is disabled, we don't trigger
             // additional reportUnknownMemberType diagnostics.
@@ -5508,7 +5566,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             reportUseOfTypeCheckOnly(type, node.memberName);
         }
 
-        return { type, isIncomplete, isAsymmetricAccessor, isRequired, isNotRequired, memberAccessDeprecationInfo };
+        return { type, isIncomplete, isAsymmetricAccessor, isRequired, isNotRequired, memberAccessDeprecationInfo, typeErrors };
     }
 
     function getTypeOfClassMemberName(
@@ -15183,6 +15241,71 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         return unionType;
     }
 
+    function createIntersectionType(
+        classType: ClassType,
+        errorNode: ParseNode,
+        typeArgs: TypeResultWithNode[] | undefined,
+        flags: EvaluatorFlags
+    ): Type {
+        const fileInfo = AnalyzerNodeInfo.getFileInfo(errorNode);
+        const types: Type[] = [];
+        let allowSingleTypeArg = false;
+
+        if (!typeArgs) {
+            // If no type arguments are provided, the resulting type
+            // depends on whether we're evaluating a type annotation or
+            // we're in some other context.
+            if ((flags & EvaluatorFlags.ExpectingTypeAnnotation) !== 0) {
+                addError(LocMessage.intersectionTypeArgCount(), errorNode);
+                return NeverType.createNever();
+            }
+
+            return classType;
+        }
+
+        for (const typeArg of typeArgs) {
+            let typeArgType = typeArg.type;
+
+            if (!validateTypeArg(typeArg, { allowVariadicTypeVar: true, allowUnpackedTuples: true })) {
+                typeArgType = UnknownType.create();
+            } else if (!isEffectivelyInstantiable(typeArgType)) {
+                addExpectedClassDiagnostic(typeArgType, typeArg.node);
+                typeArgType = UnknownType.create();
+            }
+
+            // If this is an unpacked tuple, explode out the individual items.
+            if (isUnpackedClass(typeArg.type) && typeArg.type.tupleTypeArguments) {
+                if (fileInfo.diagnosticRuleSet.enableExperimentalFeatures) {
+                    typeArg.type.tupleTypeArguments.forEach((tupleTypeArg) => {
+                        types.push(convertToInstantiable(tupleTypeArg.type));
+                    });
+
+                    allowSingleTypeArg = true;
+                } else {
+                    addDiagnostic(DiagnosticRule.reportGeneralTypeIssues, LocMessage.intersectionUnpackedTuple(), errorNode);
+
+                    types.push(UnknownType.create());
+                }
+            } else {
+                types.push(typeArgType);
+            }
+        }
+
+        // Validate that we received at least two type arguments. One type argument
+        // is allowed if it's an unpacked variadic type var or tuple. None is also allowed
+        // since it is used to define NoReturn in typeshed stubs).
+        if (types.length === 1 && !allowSingleTypeArg && !isNoneInstance(types[0])) {
+            addDiagnostic(DiagnosticRule.reportGeneralTypeIssues, LocMessage.intersectionTypeArgCount(), errorNode);
+        }
+
+        let intersectionType = intersectTypes(types);
+        if (intersectionClassType && isInstantiableClass(intersectionClassType)) {
+            intersectionType = TypeBase.cloneAsSpecialForm(intersectionType, intersectionClassType);
+        }
+
+        return intersectionType;
+    }
+
     // Creates a type that represents "Generic[T1, T2, ...]", used in the
     // definition of a generic class.
     function createGenericType(
@@ -15437,6 +15560,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             ['Never', { alias: '', module: 'builtins', isSpecialForm: true }],
             ['LiteralString', { alias: '', module: 'builtins', isSpecialForm: true }],
             ['ReadOnly', { alias: '', module: 'builtins', isSpecialForm: true }],
+            ['Intersection', { alias: '', module: 'builtins', isSpecialForm: true }]
         ]);
 
         const aliasMapEntry = specialTypes.get(assignedName);
@@ -19423,6 +19547,10 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
                     return { type: createUnionType(classType, errorNode, typeArgs, flags) };
                 }
 
+                case 'Intersection': {
+                    return { type: createIntersectionType(classType, errorNode, typeArgs, flags) }
+                }
+
                 case 'Generic': {
                     return { type: createGenericType(classType, errorNode, typeArgs, flags) };
                 }
@@ -22540,7 +22668,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
             // A few special forms that are normally not compatible with type[T]
             // are compatible specifically in the context of isinstance and issubclass.
             if ((flags & AssignTypeFlags.AllowIsinstanceSpecialForms) !== 0) {
-                if (ClassType.isBuiltIn(srcType.specialForm, ['Callable', 'UnionType', 'Generic'])) {
+                if (ClassType.isBuiltIn(srcType.specialForm, ['Callable', 'UnionType', 'Generic', 'IntersectionType'])) {
                     isSpecialFormExempt = true;
                 }
             }
@@ -26404,6 +26532,7 @@ export function createTypeEvaluator(importLookup: ImportLookup, evaluatorOptions
         getObjectType,
         getNoneType,
         getUnionClassType,
+        getIntersectionClassType,
         getBuiltInObject,
         getTypingType,
         assignTypeArguments,

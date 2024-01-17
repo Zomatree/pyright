@@ -1081,12 +1081,15 @@ export namespace Localizer {
         export const unhashableSetEntry = () => getRawString('Diagnostic.unhashableSetEntry');
         export const unionForwardReferenceNotAllowed = () => getRawString('Diagnostic.unionForwardReferenceNotAllowed');
         export const unionSyntaxIllegal = () => getRawString('Diagnostic.unionSyntaxIllegal');
+        export const intersectionSyntaxIllegal = () => getRawString("Diagnostic.intersectionSyntaxIllegal")
         export const unionTypeArgCount = () => getRawString('Diagnostic.unionTypeArgCount');
+        export const intersectionTypeArgCount = () => getRawString('Diagnostic.intersectionTypeArgCount');
         export const uninitializedAbstractVariables = () =>
             new ParameterizedString<{ classType: string }>(getRawString('Diagnostic.uninitializedAbstractVariables'));
         export const uninitializedInstanceVariable = () =>
             new ParameterizedString<{ name: string }>(getRawString('Diagnostic.uninitializedInstanceVariable'));
         export const unionUnpackedTuple = () => getRawString('Diagnostic.unionUnpackedTuple');
+        export const intersectionUnpackedTuple = () => getRawString('Diagnostic.intersectionUnpackedTuple');
         export const unionUnpackedTypeVarTuple = () => getRawString('Diagnostic.unionUnpackedTypeVarTuple');
         export const unmatchedEndregionComment = () => getRawString('Diagnostic.unmatchedEndregionComment');
         export const unmatchedRegionComment = () => getRawString('Diagnostic.unmatchedRegionComment');

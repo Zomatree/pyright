@@ -10,7 +10,7 @@
 import { Commands } from '../commands/commands';
 import { appendArray } from './collectionUtils';
 import { DiagnosticLevel } from './configOptions';
-import { Range, TextRange } from './textRange';
+import { Position, Range, TextRange } from './textRange';
 import { Uri } from './uri/uri';
 
 const defaultMaxDepth = 5;
@@ -125,6 +125,15 @@ export class Diagnostic {
 
     getRelatedInfo() {
         return this._relatedInfo;
+    }
+
+    copy() {
+        let self = new Diagnostic(this.category, this.message, this.range, this.priority)
+        self._actions = structuredClone(this._actions)
+        self._rule = this._rule
+        self._relatedInfo = structuredClone(this._relatedInfo)
+
+        return self
     }
 }
 

@@ -13,6 +13,7 @@ import {
     AnyType,
     ClassType,
     FunctionType,
+    IntersectionType,
     ModuleType,
     NeverType,
     OverloadedFunctionType,
@@ -93,6 +94,10 @@ export class TypeWalker {
 
             case TypeCategory.TypeVar:
                 this.visitTypeVar(type);
+                break;
+
+            case TypeCategory.Intersection:
+                this.visitIntersection(type);
                 break;
 
             default:
@@ -183,6 +188,15 @@ export class TypeWalker {
     }
 
     visitUnion(type: UnionType): void {
+        for (const subtype of type.subtypes) {
+            this.walk(subtype);
+            if (this._isWalkCanceled) {
+                break;
+            }
+        }
+    }
+
+    visitIntersection(type: IntersectionType): void {
         for (const subtype of type.subtypes) {
             this.walk(subtype);
             if (this._isWalkCanceled) {

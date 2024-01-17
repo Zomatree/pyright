@@ -24,6 +24,7 @@ import {
     isClassInstance,
     isFunction,
     isInstantiableClass,
+    isIntersection,
     isNever,
     isTypeSame,
     isTypeVar,
@@ -508,7 +509,7 @@ export function assignTypeToTypeVar(
                     if (isTypeSame(newNarrowTypeBound, curWideTypeBound)) {
                         makeConcrete = false;
                     } else if (
-                        isUnion(newNarrowTypeBound) &&
+                        (isUnion(newNarrowTypeBound) || isIntersection(newNarrowTypeBound)) &&
                         newNarrowTypeBound.subtypes.some((subtype) => isTypeSame(subtype, curWideTypeBound!))
                     ) {
                         makeConcrete = false;
@@ -1122,7 +1123,7 @@ export function populateTypeVarContextBasedOnExpectedType(
                     synthTypeVar = convertParamSpecValueToType(synthTypeVar);
                 }
 
-                if (isUnion(synthTypeVar)) {
+                if (isUnion(synthTypeVar) || isIntersection(synthTypeVar)) {
                     let foundSynthTypeVar: TypeVarType | undefined;
 
                     sortTypes(synthTypeVar.subtypes).forEach((subtype) => {

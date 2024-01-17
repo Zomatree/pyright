@@ -26,10 +26,12 @@ export interface TracePrinter {
     printFileOrModuleName(fileUriOrModule: Uri | AbsoluteModuleDescriptor): string;
 }
 
+export function wrap(value: string | undefined, ch = "'") {
+    return value ? `${ch}${value}${ch}` : '';
+}
+
 export function createTracePrinter(roots: Uri[]): TracePrinter {
-    function wrap(value: string | undefined, ch = "'") {
-        return value ? `${ch}${value}${ch}` : '';
-    }
+
 
     // Sort roots in desc order so that we compare longer path first
     // when getting relative path.
@@ -88,6 +90,9 @@ export function createTracePrinter(roots: Uri[]): TracePrinter {
 
                 case TypeCategory.Union:
                     return `Union [${type.subtypes.map((o) => wrap(printType(o), '"')).join(',')}]`;
+
+                case TypeCategory.Intersection:
+                    return `Intersection [${type.subtypes.map((o) => wrap(printType(o), '"')).join(',')}]`;
 
                 case TypeCategory.Unknown:
                     return `Unknown ${wrap(type.typeAliasInfo?.fullName)}`;

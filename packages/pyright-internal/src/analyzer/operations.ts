@@ -35,7 +35,7 @@ import {
     isOptionalType,
     isTupleClass,
     isUnboundedTupleClass,
-    isUnionableType,
+    isUnionableOrIntersectableType,
     lookUpClassMember,
     makeInferenceContext,
     mapSubtypes,
@@ -51,11 +51,13 @@ import {
     TypeBase,
     UnknownType,
     combineTypes,
+    intersectTypes,
     isAnyOrUnknown,
     isClass,
     isClassInstance,
     isFunction,
     isInstantiableClass,
+    isIntersection,
     isNever,
     isOverloadedFunction,
     isUnion,
@@ -602,7 +604,7 @@ export function getTypeOfBinaryOperation(
             adjustedLeftType = convertToInstantiable(evaluator.getNoneType());
         }
 
-        if (isUnionableType([adjustedLeftType, adjustedRightType])) {
+        if (isUnionableOrIntersectableType([adjustedLeftType, adjustedRightType])) {
             const fileInfo = getFileInfo(node);
             const unionNotationSupported =
                 fileInfo.isStubFile ||
@@ -692,9 +694,107 @@ export function getTypeOfBinaryOperation(
         }
     }
 
+    if (
+        node.operator === OperatorType.BitwiseAnd &&
+        !customMetaclassSupportsMethod(leftType, '__and__') &&
+        !customMetaclassSupportsMethod(rightType, '__rand__')
+    ) {
+        let adjustedRightType = rightType;
+        let adjustedLeftType = leftType;
+
+        if (isUnionableOrIntersectableType([adjustedLeftType, adjustedRightType])) {
+            const fileInfo = getFileInfo(node);
+            const intersectionNotationSupported =
+                fileInfo.isStubFile ||
+                (flags & EvaluatorFlags.AllowForwardReferences) !== 0 ||
+                fileInfo.executionEnvironment.pythonVersion >= PythonVersion.V3_13;
+            if (!intersectionNotationSupported) {
+                // If the left type is Any, we can't say for sure whether this
+                // is an illegal syntax or a valid application of the "&" operator.
+                if (!isAnyOrUnknown(adjustedLeftType)) {
+                    evaluator.addDiagnostic(
+                        DiagnosticRule.reportGeneralTypeIssues,
+                        LocMessage.intersectionSyntaxIllegal(),
+                        node,
+                        node.operatorToken
+                    );
+                }
+            }
+
+            if (
+                !evaluator.validateTypeArg(
+                    { ...leftTypeResult, node: leftExpression },
+                    { allowVariadicTypeVar: true, allowUnpackedTuples: true }
+                ) ||
+                !evaluator.validateTypeArg(
+                    { ...rightTypeResult, node: rightExpression },
+                    { allowVariadicTypeVar: true, allowUnpackedTuples: true }
+                )
+            ) {
+                return { type: UnknownType.create() };
+            }
+
+            adjustedLeftType = evaluator.reportMissingTypeArguments(
+                node.leftExpression,
+                adjustedLeftType,
+                flags | EvaluatorFlags.ExpectingInstantiableType
+            );
+            adjustedRightType = evaluator.reportMissingTypeArguments(
+                node.rightExpression,
+                adjustedRightType,
+                flags | EvaluatorFlags.ExpectingInstantiableType
+            );
+
+            let newIntersection = intersectTypes([adjustedLeftType, adjustedRightType]);
+
+            const intersectionClass = evaluator.getIntersectionClassType();
+            if (intersectionClass && isInstantiableClass(intersectionClass)) {
+                newIntersection = TypeBase.cloneAsSpecialForm(newIntersection, intersectionClass);
+            }
+
+            // Check for "stringified" forward reference type expressions. The "|" operator
+            // doesn't support these except in certain circumstances. Notably, it can't be used
+            // with other strings or with types that are not specialized using an index form.
+            if (!fileInfo.isStubFile) {
+                let stringNode: ExpressionNode | undefined;
+                let otherNode: ExpressionNode | undefined;
+                let otherType: Type | undefined;
+
+                if (leftExpression.nodeType === ParseNodeType.StringList) {
+                    stringNode = leftExpression;
+                    otherNode = rightExpression;
+                    otherType = rightType;
+                } else if (rightExpression.nodeType === ParseNodeType.StringList) {
+                    stringNode = rightExpression;
+                    otherNode = leftExpression;
+                    otherType = leftType;
+                }
+
+                if (stringNode && otherNode && otherType) {
+                    let isAllowed = true;
+                    if (isClass(otherType)) {
+                        if (!otherType.isTypeArgumentExplicit || isClassInstance(otherType)) {
+                            isAllowed = false;
+                        }
+                    }
+
+                    if (!isAllowed) {
+                        evaluator.addDiagnostic(
+                            DiagnosticRule.reportGeneralTypeIssues,
+                            LocMessage.unionForwardReferenceNotAllowed(),
+                            stringNode
+                        );
+                    }
+                }
+            }
+
+            return { type: newIntersection };
+        }
+    }
+
     if ((flags & EvaluatorFlags.ExpectingTypeAnnotation) !== 0) {
-        // Exempt "|" because it might be a union operation involving unknowns.
-        if (node.operator !== OperatorType.BitwiseOr) {
+        // Exempt "|" and "&" because it might be a union/intersection operation involving unknowns.
+        if (node.operator !== OperatorType.BitwiseOr && node.operator !== OperatorType.BitwiseAnd) {
             evaluator.addDiagnostic(
                 DiagnosticRule.reportGeneralTypeIssues,
                 LocMessage.binaryOperationNotAllowed(),
@@ -761,13 +861,15 @@ export function getTypeOfBinaryOperation(
                     node.leftExpression
                 );
             } else {
-                // If neither the LHS or RHS are unions, don't include a diagnostic addendum
+                // If neither the LHS or RHS are unions or intersections, don't include a diagnostic addendum
                 // because it will be redundant with the main diagnostic message. The addenda
                 // are useful only if union expansion was used for one or both operands.
                 let diagString = '';
                 if (
                     isUnion(evaluator.makeTopLevelTypeVarsConcrete(leftType)) ||
-                    isUnion(evaluator.makeTopLevelTypeVarsConcrete(rightType))
+                    isUnion(evaluator.makeTopLevelTypeVarsConcrete(rightType)) ||
+                    isIntersection(evaluator.makeTopLevelTypeVarsConcrete(leftType)) ||
+                    isIntersection(evaluator.makeTopLevelTypeVarsConcrete(rightType))
                 ) {
                     diagString = diag.getString();
                 }

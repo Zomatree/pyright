@@ -10,8 +10,12 @@
 import { assert } from '../common/debug';
 import { Uri } from '../common/uri/uri';
 import { ArgumentNode, ExpressionNode, NameNode, ParameterCategory } from '../parser/parseNodes';
+import { AnalyzerFileInfo } from './analyzerFileInfo';
 import { ClassDeclaration, FunctionDeclaration, SpecialBuiltInClassDeclaration } from './declaration';
 import { Symbol, SymbolTable } from './symbol';
+import { wrap } from './tracePrinter';
+import { PrintTypeFlags, printType } from './typePrinter';
+import { addConditionToType, computeMroLinearization } from './typeUtils';
 
 export const enum TypeCategory {
     // Name is not bound to a value of any type.
@@ -47,6 +51,9 @@ export const enum TypeCategory {
     // Composite type (e.g. Number OR String).
     Union,
 
+    // Composite type (e.g. Foo AND Bar)
+    Intersection,
+
     // Type variable (defined with TypeVar)
     TypeVar,
 }
@@ -75,7 +82,9 @@ export type UnionableType =
     | ModuleType
     | TypeVarType;
 
-export type Type = UnionableType | NeverType | UnionType;
+export type IntersectableType = UnboundType | UnknownType | ClassType | TypeVarType;
+
+export type Type = UnionableType | NeverType | UnionType | IntersectionType;
 
 export type TypeVarScopeId = string;
 export const WildcardTypeVarScopeId = '*';
@@ -2450,6 +2459,113 @@ export namespace UnionType {
     }
 }
 
+export interface IntersectionType extends TypeBase {
+    category: TypeCategory.Intersection;
+    subtypes: IntersectableType[];
+    literalStrMap?: Map<string, IntersectableType> | undefined;
+    literalIntMap?: Map<bigint | number, IntersectableType> | undefined;
+    literalEnumMap?: Map<string, IntersectableType> | undefined;
+    typeAliasSources?: Set<IntersectionType>;
+    includesRecursiveTypeAlias?: boolean;
+}
+
+export namespace IntersectionType {
+    export function create() {
+        const newIntersectionType: IntersectionType = {
+            category: TypeCategory.Intersection,
+            subtypes: [],
+            flags: TypeFlags.Instance | TypeFlags.Instantiable,
+        };
+
+        return newIntersectionType;
+    }
+
+    export function addType(intersectionType: IntersectionType, newType: IntersectableType) {
+        // If we're adding a string, integer or enum literal, add it to the
+        // corresponding literal map to speed up some operations. It's not
+        // uncommon for intersection to contain hundreds of literals.
+        if (isClassInstance(newType) && newType.literalValue !== undefined && newType.condition === undefined) {
+            if (ClassType.isBuiltIn(newType, 'str')) {
+                if (intersectionType.literalStrMap === undefined) {
+                    intersectionType.literalStrMap = new Map<string, IntersectableType>();
+                }
+                intersectionType.literalStrMap.set(newType.literalValue as string, newType);
+            } else if (ClassType.isBuiltIn(newType, 'int')) {
+                if (intersectionType.literalIntMap === undefined) {
+                    intersectionType.literalIntMap = new Map<bigint | number, IntersectableType>();
+                }
+                intersectionType.literalIntMap.set(newType.literalValue as number | bigint, newType);
+            } else if (ClassType.isEnumClass(newType)) {
+                if (intersectionType.literalEnumMap === undefined) {
+                    intersectionType.literalEnumMap = new Map<string, IntersectableType>();
+                }
+                const enumLiteral = newType.literalValue as EnumLiteral;
+                intersectionType.literalEnumMap.set(enumLiteral.getName(), newType);
+            }
+        }
+
+        intersectionType.flags &= newType.flags;
+        intersectionType.subtypes.push(newType);
+
+        if (isTypeVar(newType) && newType.details.recursiveTypeAliasName) {
+            // Note that at least one recursive type alias was included in
+            // this intersection. We'll need to expand it before the intersection is used.
+            intersectionType.includesRecursiveTypeAlias = true;
+        }
+    }
+
+    export function containsType(
+        intersectionType: IntersectionType,
+        subtype: Type,
+        exclusionSet?: Set<number>,
+        recursionCount = 0
+    ): boolean {
+        // Handle string literals as a special case because unions can sometimes
+        // contain hundreds of string literal types.
+        if (isClassInstance(subtype) && subtype.condition === undefined && subtype.literalValue !== undefined) {
+            if (ClassType.isBuiltIn(subtype, 'str') && intersectionType.literalStrMap !== undefined) {
+                return intersectionType.literalStrMap.has(subtype.literalValue as string);
+            } else if (ClassType.isBuiltIn(subtype, 'int') && intersectionType.literalIntMap !== undefined) {
+                return intersectionType.literalIntMap.has(subtype.literalValue as number | bigint);
+            } else if (ClassType.isEnumClass(subtype) && intersectionType.literalEnumMap !== undefined) {
+                const enumLiteral = subtype.literalValue as EnumLiteral;
+                return intersectionType.literalEnumMap.has(enumLiteral.getName());
+            }
+        }
+
+        const foundIndex = intersectionType.subtypes.findIndex((t, i) => {
+            if (exclusionSet?.has(i)) {
+                return false;
+            }
+
+            return isTypeSame(t, subtype, {}, recursionCount);
+        });
+
+        if (foundIndex < 0) {
+            return false;
+        }
+
+        exclusionSet?.add(foundIndex);
+        return true;
+    }
+
+    export function addTypeAliasSource(intersectionType: IntersectionType, typeAliasSource: Type) {
+        if (typeAliasSource.category === TypeCategory.Intersection) {
+            const sourcesToAdd = typeAliasSource.typeAliasInfo ? [typeAliasSource] : typeAliasSource.typeAliasSources;
+
+            if (sourcesToAdd) {
+                if (!intersectionType.typeAliasSources) {
+                    intersectionType.typeAliasSources = new Set<IntersectionType>();
+                }
+
+                sourcesToAdd.forEach((source) => {
+                    intersectionType.typeAliasSources!.add(source);
+                });
+            }
+        }
+    }
+}
+
 export const enum Variance {
     Auto,
     Unknown,
@@ -2745,7 +2861,7 @@ export function isAnyOrUnknown(type: Type): type is AnyType | UnknownType {
         return true;
     }
 
-    if (isUnion(type)) {
+    if (isUnion(type) || isIntersection(type)) {
         return type.subtypes.find((subtype) => !isAnyOrUnknown(subtype)) === undefined;
     }
 
@@ -2760,12 +2876,16 @@ export function isUnion(type: Type): type is UnionType {
     return type.category === TypeCategory.Union;
 }
 
+export function isIntersection(type: Type): type is IntersectionType {
+    return type.category === TypeCategory.Intersection;
+}
+
 export function isPossiblyUnbound(type: Type): boolean {
     if (isUnbound(type)) {
         return true;
     }
 
-    if (isUnion(type)) {
+    if (isUnion(type) || isIntersection(type)) {
         return type.subtypes.find((subtype) => isPossiblyUnbound(subtype)) !== undefined;
     }
 
@@ -3091,6 +3211,27 @@ export function isTypeSame(type1: Type, type2: Type, options: TypeSameOptions = 
             );
         }
 
+
+        case TypeCategory.Intersection: {
+            const intersectionType2 = type2 as IntersectionType;
+            const subtypes1 = type1.subtypes;
+            const subtypes2 = intersectionType2.subtypes;
+
+            if (subtypes1.length !== subtypes2.length) {
+                return false;
+            }
+
+            // The types do not have a particular order, so we need to
+            // do the comparison in an order-independent manner.
+            const exclusionSet = new Set<number>();
+            return (
+                findSubtype(
+                    type1,
+                    (subtype) => !IntersectionType.containsType(intersectionType2, subtype, exclusionSet, recursionCount)
+                ) === undefined
+            );
+        }
+
         case TypeCategory.TypeVar: {
             const type2TypeVar = type2 as TypeVarType;
 
@@ -3237,8 +3378,8 @@ export function removeFromUnion(type: Type, removeFilter: (type: Type) => boolea
     return type;
 }
 
-export function findSubtype(type: Type, filter: (type: UnionableType | NeverType) => boolean) {
-    if (isUnion(type)) {
+export function findSubtype(type: Type, filter: (type: UnionableType | IntersectionType | NeverType) => boolean) {
+    if (isUnion(type) || isIntersection(type)) {
         return type.subtypes.find((subtype) => {
             return filter(subtype);
         });
@@ -3358,6 +3499,115 @@ export function combineTypes(subtypes: Type[], maxSubtypeCount?: number): Type {
 
     return newUnionType;
 }
+
+export function intersectTypes(subtypes: Type[], maxSubtypeCount?: number): Type {
+    // Filter out any "Never" and "NoReturn" types.
+    let sawNoReturn = false;
+
+    if (subtypes.some((subtype) => subtype.category === TypeCategory.Never))
+        subtypes = subtypes.filter((subtype) => {
+            if (subtype.category === TypeCategory.Never && subtype.isNoReturn) {
+                sawNoReturn = true;
+            }
+            return subtype.category !== TypeCategory.Never;
+        });
+
+    if (subtypes.length === 0) {
+        return sawNoReturn ? NeverType.createNoReturn() : NeverType.createNever();
+    }
+
+    // Handle the common case where there is only one type.
+    // Also handle the common case where there are multiple copies of the same type.
+    let allSubtypesAreSame = true;
+    if (subtypes.length > 1) {
+        for (let index = 1; index < subtypes.length; index++) {
+            if (subtypes[index] !== subtypes[0]) {
+                allSubtypesAreSame = false;
+                break;
+            }
+        }
+    }
+
+    if (allSubtypesAreSame) {
+        return subtypes[0];
+    }
+
+    // Expand all intersection types.
+    let expandedTypes: Type[] = [];
+    const typeAliasSources = new Set<IntersectionType>();
+
+    for (const subtype of subtypes) {
+        if (isIntersection(subtype)) {
+            expandedTypes = expandedTypes.concat(subtype.subtypes);
+
+            if (subtype.typeAliasInfo) {
+                typeAliasSources.add(subtype);
+            } else if (subtype.typeAliasSources) {
+                subtype.typeAliasSources.forEach((subtype) => {
+                    typeAliasSources.add(subtype);
+                });
+            }
+        } else {
+            expandedTypes.push(subtype);
+        }
+    }
+
+    // Sort all of the literal and empty types to the end.
+    expandedTypes = expandedTypes.sort((type1, type2) => {
+        if (isClass(type1) && type1.literalValue !== undefined) {
+            return 1;
+        }
+
+        if (isClass(type2) && type2.literalValue !== undefined) {
+            return -1;
+        }
+
+        if (isClassInstance(type1) && type1.isEmptyContainer) {
+            return 1;
+        } else if (isClassInstance(type2) && type2.isEmptyContainer) {
+            return -1;
+        }
+
+        return 0;
+    });
+
+    // If removing all NoReturn types results in no remaining types,
+    // convert it to an unknown.
+    if (expandedTypes.length === 0) {
+        return UnknownType.create();
+    }
+
+    const newIntersectionType = IntersectionType.create();
+    if (typeAliasSources.size > 0) {
+        newIntersectionType.typeAliasSources = typeAliasSources;
+    }
+
+    let hitMaxSubtypeCount = false;
+
+    expandedTypes.forEach((subtype, index) => {
+        if (index === 0) {
+            IntersectionType.addType(newIntersectionType, subtype as IntersectableType);
+        } else {
+            if (maxSubtypeCount === undefined || newIntersectionType.subtypes.length < maxSubtypeCount) {
+                IntersectionType.addType(newIntersectionType, subtype as IntersectableType);
+            } else {
+                hitMaxSubtypeCount = true;
+            }
+        }
+    });
+
+    if (hitMaxSubtypeCount) {
+        return AnyType.create();
+    }
+
+    // If only one type remains, convert it from an intersection to a simple type.
+    if (newIntersectionType.subtypes.length === 1) {
+        return newIntersectionType.subtypes[0];
+    }
+
+    return newIntersectionType;
+}
+
 
 // Determines whether the dest type is the same as the source type with
 // the possible exception that the source type has a literal value when

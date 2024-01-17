@@ -537,6 +537,8 @@ function getTypeCategoryString(typeCategory: TypeCategory, type: any) {
             return 'Module';
         case TypeCategory.Union:
             return 'Union';
+        case TypeCategory.Intersection:
+            return 'Intersection';
         case TypeCategory.TypeVar:
             return 'TypeVar';
         default:

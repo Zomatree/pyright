@@ -25,18 +25,18 @@ export interface FileDiagnostics {
 
 // Creates and tracks a list of diagnostics.
 export class DiagnosticSink {
-    private _diagnosticList: Diagnostic[];
-    private _diagnosticMap: Map<string, Diagnostic>;
+    diagnosticList: Diagnostic[];
+    diagnosticMap: Map<string, Diagnostic>;
 
     constructor(diagnostics?: Diagnostic[]) {
-        this._diagnosticList = diagnostics || [];
-        this._diagnosticMap = new Map<string, Diagnostic>();
+        this.diagnosticList = diagnostics || [];
+        this.diagnosticMap = new Map<string, Diagnostic>();
     }
 
     fetchAndClear() {
-        const prevDiagnostics = this._diagnosticList;
-        this._diagnosticList = [];
-        this._diagnosticMap.clear();
+        const prevDiagnostics = this.diagnosticList;
+        this.diagnosticList = [];
+        this.diagnosticMap.clear();
         return prevDiagnostics;
     }
 
@@ -82,54 +82,61 @@ export class DiagnosticSink {
         const key =
             `${diag.range.start.line},${diag.range.start.character}-` +
             `${diag.range.end.line}-${diag.range.end.character}:${hashString(diag.message)}}`;
-        if (!this._diagnosticMap.has(key)) {
-            this._diagnosticList.push(diag);
-            this._diagnosticMap.set(key, diag);
+        if (!this.diagnosticMap.has(key)) {
+            this.diagnosticList.push(diag);
+            this.diagnosticMap.set(key, diag);
         }
         return diag;
     }
 
     addDiagnostics(diagsToAdd: Diagnostic[]) {
-        appendArray(this._diagnosticList, diagsToAdd);
+        appendArray(this.diagnosticList, diagsToAdd);
     }
 
     getErrors() {
-        return this._diagnosticList.filter((diag) => diag.category === DiagnosticCategory.Error);
+        return this.diagnosticList.filter((diag) => diag.category === DiagnosticCategory.Error);
     }
 
     getWarnings() {
-        return this._diagnosticList.filter((diag) => diag.category === DiagnosticCategory.Warning);
+        return this.diagnosticList.filter((diag) => diag.category === DiagnosticCategory.Warning);
     }
 
     getInformation() {
-        return this._diagnosticList.filter((diag) => diag.category === DiagnosticCategory.Information);
+        return this.diagnosticList.filter((diag) => diag.category === DiagnosticCategory.Information);
     }
 
     getUnusedCode() {
-        return this._diagnosticList.filter((diag) => diag.category === DiagnosticCategory.UnusedCode);
+        return this.diagnosticList.filter((diag) => diag.category === DiagnosticCategory.UnusedCode);
     }
 
     getUnreachableCode() {
-        return this._diagnosticList.filter((diag) => diag.category === DiagnosticCategory.UnreachableCode);
+        return this.diagnosticList.filter((diag) => diag.category === DiagnosticCategory.UnreachableCode);
     }
 
     getDeprecated() {
-        return this._diagnosticList.filter((diag) => diag.category === DiagnosticCategory.Deprecated);
+        return this.diagnosticList.filter((diag) => diag.category === DiagnosticCategory.Deprecated);
+    }
+
+    copy() {
+        let self = new DiagnosticSink(this.diagnosticList.map(diag => diag.copy()))
+        self.diagnosticMap = new Map(Array.from(this.diagnosticMap.entries(), ([k, v]) => [k, v.copy()]))
+
+        return self
     }
 }
 
 // Specialized version of DiagnosticSink that works with TextRange objects
 // and converts text ranges to line and column numbers.
 export class TextRangeDiagnosticSink extends DiagnosticSink {
-    private _lines: TextRangeCollection<TextRange>;
+    lines: TextRangeCollection<TextRange>;
 
     constructor(lines: TextRangeCollection<TextRange>, diagnostics?: Diagnostic[]) {
         super(diagnostics);
-        this._lines = lines;
+        this.lines = lines;
     }
 
     addDiagnosticWithTextRange(level: DiagnosticLevel, message: string, range: TextRange) {
-        const positionRange = convertOffsetsToRange(range.start, range.start + range.length, this._lines);
+        const positionRange = convertOffsetsToRange(range.start, range.start + range.length, this.lines);
         switch (level) {
             case 'error':
                 return this.addError(message, positionRange);
@@ -148,7 +155,7 @@ export class TextRangeDiagnosticSink extends DiagnosticSink {
     addUnusedCodeWithTextRange(message: string, range: TextRange, action?: DiagnosticAction) {
         return this.addUnusedCode(
             message,
-            convertOffsetsToRange(range.start, range.start + range.length, this._lines),
+            convertOffsetsToRange(range.start, range.start + range.length, this.lines),
             action
         );
     }
@@ -156,7 +163,7 @@ export class TextRangeDiagnosticSink extends DiagnosticSink {
     addUnreachableCodeWithTextRange(message: string, range: TextRange, action?: DiagnosticAction) {
         return this.addUnreachableCode(
             message,
-            convertOffsetsToRange(range.start, range.start + range.length, this._lines),
+            convertOffsetsToRange(range.start, range.start + range.length, this.lines),
             action
         );
     }
@@ -164,8 +171,15 @@ export class TextRangeDiagnosticSink extends DiagnosticSink {
     addDeprecatedWithTextRange(message: string, range: TextRange, action?: DiagnosticAction) {
         return this.addDeprecated(
             message,
-            convertOffsetsToRange(range.start, range.start + range.length, this._lines),
+            convertOffsetsToRange(range.start, range.start + range.length, this.lines),
             action
         );
+    }
+
+    override copy() {
+        let self = new TextRangeDiagnosticSink(this.lines.copy(), this.diagnosticList.map(diag => diag.copy()))
+        self.diagnosticMap = new Map(Array.from(this.diagnosticMap.entries(), ([k, v]) => [k, v.copy()]))
+
+        return self
     }
 }

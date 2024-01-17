@@ -22,12 +22,15 @@ import {
     FunctionParameter,
     FunctionType,
     FunctionTypeFlags,
+    IntersectionType,
+    intersectTypes,
     isAny,
     isAnyOrUnknown,
     isClass,
     isClassInstance,
     isFunction,
     isInstantiableClass,
+    isIntersection,
     isKeywordOnlySeparator,
     isNever,
     isOverloadedFunction,
@@ -357,7 +360,7 @@ export function isTypeVarSame(type1: TypeVarType, type2: Type) {
     }
 
     // If the second type isn't a union, return false.
-    if (!isUnion(type2)) {
+    if (!isUnion(type2) || !isIntersection(type2)) {
         return false;
     }
 
@@ -462,6 +465,43 @@ export function mapSubtypes(type: Type, callback: (type: Type) => Type | undefin
                 // Do our best to retain type aliases.
                 if (newType.category === TypeCategory.Union) {
                     UnionType.addTypeAliasSource(newType, type);
+                }
+
+                return newType;
+            }
+        }
+
+        return type;
+
+    } else if (isIntersection(type)) {
+        const subtypes = sortSubtypes ? sortTypes(type.subtypes) : type.subtypes;
+
+        for (let i = 0; i < subtypes.length; i++) {
+            const subtype = subtypes[i];
+            const transformedType = callback(subtype);
+
+            // Avoid doing any memory allocations until a change is detected.
+            if (subtype !== transformedType) {
+                const typesToCombine: Type[] = subtypes.slice(0, i);
+
+                // Create a helper lambda that accumulates transformed subtypes.
+                const accumulateSubtype = (newSubtype: Type | undefined) => {
+                    if (newSubtype) {
+                        typesToCombine.push(addConditionToType(newSubtype, getTypeCondition(type)));
+                    }
+                };
+
+                accumulateSubtype(transformedType);
+
+                for (i++; i < subtypes.length; i++) {
+                    accumulateSubtype(callback(subtypes[i]));
+                }
+
+                const newType = intersectTypes(typesToCombine);
+
+                // Do our best to retain type aliases.
+                if (newType.category === TypeCategory.Intersection) {
+                    IntersectionType.addTypeAliasSource(newType, type)
                 }
 
                 return newType;
@@ -607,6 +647,7 @@ function compareTypes(a: Type, b: Type, recursionCount = 0): number {
         case TypeCategory.Unknown:
         case TypeCategory.Any:
         case TypeCategory.Never:
+        case TypeCategory.Intersection:
         case TypeCategory.Union: {
             return 0;
         }
@@ -764,7 +805,7 @@ export function doForEachSubtype(
     callback: (type: Type, index: number, allSubtypes: Type[]) => void,
     sortSubtypes = false
 ): void {
-    if (isUnion(type)) {
+    if (isUnion(type) || isIntersection(type)) {
         const subtypes = sortSubtypes ? sortTypes(type.subtypes) : type.subtypes;
         subtypes.forEach((subtype, index) => {
             callback(subtype, index, subtypes);
@@ -819,7 +860,7 @@ export function preserveUnknown(type1: Type, type2: Type): AnyType | UnknownType
 
 // Determines whether the specified type is a type that can be
 // combined with other types for a union.
-export function isUnionableType(subtypes: Type[]): boolean {
+export function isUnionableOrIntersectableType(subtypes: Type[]): boolean {
     let typeFlags = TypeFlags.Instance | TypeFlags.Instantiable;
 
     for (const subtype of subtypes) {
@@ -917,6 +958,10 @@ export function addConditionToType(
 
         case TypeCategory.Union:
             return combineTypes(type.subtypes.map((t) => addConditionToType(t, condition)));
+
+        case TypeCategory.Intersection:
+            return intersectTypes(type.subtypes.map((t) => addConditionToType(t, condition)));
+
     }
 }
 
@@ -929,6 +974,7 @@ export function getTypeCondition(type: Type): TypeCondition[] | undefined {
         case TypeCategory.Module:
         case TypeCategory.TypeVar:
         case TypeCategory.OverloadedFunction:
+        case TypeCategory.Intersection:
         case TypeCategory.Union:
             return undefined;
 
@@ -989,7 +1035,7 @@ export function transformPossibleRecursiveTypeAlias(type: Type | undefined): Typ
             return applySolvedTypeVars(unspecializedType, typeVarContext);
         }
 
-        if (isUnion(type) && type.includesRecursiveTypeAlias) {
+        if (isUnion(type) || isIntersection(type) && type.includesRecursiveTypeAlias) {
             let newType = mapSubtypes(type, (subtype) => transformPossibleRecursiveTypeAlias(subtype));
 
             if (newType !== type && type.typeAliasInfo) {
@@ -1268,6 +1314,10 @@ export function isCallableType(type: Type): boolean {
         return type.subtypes.every((subtype) => isCallableType(subtype));
     }
 
+    if (isIntersection(type)) {
+        return type.subtypes.some((subtype) => isCallableType(subtype));
+    }
+
     return false;
 }
 
@@ -1276,11 +1326,19 @@ export function isDescriptorInstance(type: Type, requireSetter = false): boolean
         return type.subtypes.every((subtype) => isMaybeDescriptorInstance(subtype, requireSetter));
     }
 
+    if (isIntersection(type)) {
+        return type.subtypes.some((subtype) => isMaybeDescriptorInstance(subtype, requireSetter));
+    }
+
     return isMaybeDescriptorInstance(type, requireSetter);
 }
 
 export function isMaybeDescriptorInstance(type: Type, requireSetter = false): boolean {
     if (isUnion(type)) {
+        return type.subtypes.some((subtype) => isMaybeDescriptorInstance(subtype, requireSetter));
+    }
+
+    if (isIntersection(type)) {
         return type.subtypes.some((subtype) => isMaybeDescriptorInstance(subtype, requireSetter));
     }
 
@@ -1920,7 +1978,7 @@ export function getTypeVarArgumentsRecursive(type: Type, recursionCount = 0): Ty
         return combinedList;
     }
 
-    if (isUnion(type)) {
+    if (isUnion(type) || isIntersection(type)) {
         const combinedList: TypeVarType[] = [];
         doForEachSubtype(type, (subtype) => {
             addTypeVarsToListIfUnique(combinedList, getTypeVarArgumentsRecursive(subtype, recursionCount));
@@ -1995,7 +2053,7 @@ function getTypeVarWithinTypeInfoRecursive(
                 }
             });
         }
-    } else if (isUnion(type)) {
+    } else if (isUnion(type) || isIntersection(type)) {
         doForEachSubtype(type, (subtype) => {
             const subResult = getTypeVarWithinTypeInfoRecursive(subtype, typeVar, recursionCount);
             if (subResult.isTypeVarUsed) {
@@ -2355,6 +2413,10 @@ export function isEffectivelyInstantiable(type: Type): boolean {
         return type.subtypes.every((subtype) => isEffectivelyInstantiable(subtype));
     }
 
+    if (isIntersection(type)) {
+        return type.subtypes.some((subtype) => isEffectivelyInstantiable(subtype));
+    }
+
     return false;
 }
 
@@ -2649,7 +2711,7 @@ export function isPartlyUnknown(type: Type, recursionCount = 0): boolean {
     }
 
     // See if a union contains an unknown type.
-    if (isUnion(type)) {
+    if (isUnion(type) || isIntersection(type)) {
         return findSubtype(type, (subtype) => isPartlyUnknown(subtype, recursionCount)) !== undefined;
     }
 
@@ -2926,6 +2988,7 @@ export function requiresTypeArguments(classType: ClassType) {
             'Literal',
             'Annotated',
             'TypeGuard',
+            'Intersection'
         ];
 
         if (specialClasses.some((t) => t === (classType.aliasName || classType.details.name))) {
@@ -3541,6 +3604,31 @@ class TypeVarTransformer {
             });
 
             return !isNever(newUnionType) ? newUnionType : UnknownType.create();
+        }
+
+        if (isIntersection(type)) {
+            const newIntersectionType = mapSubtypes(type, (subtype) => {
+                let transformedType: Type = this.apply(subtype, recursionCount);
+
+                // If we're transforming a variadic type variable within a union,
+                // combine the individual types within the variadic type variable.
+                if (isVariadicTypeVar(subtype) && !isVariadicTypeVar(transformedType)) {
+                    const subtypesToCombine: Type[] = [];
+                    doForEachSubtype(transformedType, (transformedSubtype) => {
+                        subtypesToCombine.push(_expandVariadicUnpackedUnion(transformedSubtype));
+                    });
+
+                    transformedType = intersectTypes(subtypesToCombine);
+                }
+
+                if (this.transformUnionSubtype) {
+                    return this.transformUnionSubtype(subtype, transformedType, recursionCount);
+                }
+
+                return transformedType;
+            });
+
+            return !isNever(newIntersectionType) ? newIntersectionType : UnknownType.create();
         }
 
         if (isClass(type)) {

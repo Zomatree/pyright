@@ -803,6 +803,7 @@ export class PackageTypeVerifier {
                 break;
             }
 
+            case TypeCategory.Intersection:
             case TypeCategory.Union: {
                 doForEachSubtype(type, (subtype) => {
                     knownStatus = this._updateKnownStatusIfWorse(
@@ -1327,6 +1328,7 @@ export class PackageTypeVerifier {
                 break;
             }
 
+            case TypeCategory.Intersection:
             case TypeCategory.Union: {
                 doForEachSubtype(type, (subtype) => {
                     knownStatus = this._updateKnownStatusIfWorse(

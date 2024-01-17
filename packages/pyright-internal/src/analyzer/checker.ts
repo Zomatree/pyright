@@ -174,6 +174,7 @@ import {
     isClassInstance,
     isFunction,
     isInstantiableClass,
+    isIntersection,
     isModule,
     isNever,
     isOverloadedFunction,
@@ -2487,6 +2488,9 @@ export class Checker extends ParseTreeWalker {
                     isUnion(returnType) &&
                     returnType.subtypes.some(
                         (subtype) => isTypeVar(subtype) && subtype.details.name === usage.nodes[0].value
+                    ) || isIntersection(returnType) &&
+                    returnType.subtypes.some(
+                        (subtype) => isTypeVar(subtype) && subtype.details.name === usage.nodes[0].value
                     )
                 ) {
                     isUsedInReturnType = false;
@@ -3857,7 +3861,7 @@ export class Checker extends ParseTreeWalker {
         } else if (!isInstanceCheck && isInstantiableClass(arg0Type)) {
             const remainingTypes = filterType(arg0Type);
             filteredType = finalizeFilteredTypeList(remainingTypes);
-        } else if (isUnion(arg0Type)) {
+        } else if (isUnion(arg0Type) || isIntersection(arg0Type)) {
             let remainingTypes: Type[] = [];
             let foundAnyType = false;
 

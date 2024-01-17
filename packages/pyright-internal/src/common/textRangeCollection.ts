@@ -14,19 +14,19 @@
 import { TextRange } from './textRange';
 
 export class TextRangeCollection<T extends TextRange> {
-    private _items: T[];
+    items: T[];
 
     constructor(items: T[]) {
-        this._items = items;
+        this.items = items;
     }
 
     get start(): number {
-        return this._items.length > 0 ? this._items[0].start : 0;
+        return this.items.length > 0 ? this.items[0].start : 0;
     }
 
     get end(): number {
-        const lastItem = this._items[this._items.length - 1];
-        return this._items.length > 0 ? lastItem.start + lastItem.length : 0;
+        const lastItem = this.items[this.items.length - 1];
+        return this.items.length > 0 ? lastItem.start + lastItem.length : 0;
     }
 
     get length(): number {
@@ -34,7 +34,7 @@ export class TextRangeCollection<T extends TextRange> {
     }
 
     get count(): number {
-        return this._items.length;
+        return this.items.length;
     }
 
     contains(position: number) {
@@ -42,10 +42,10 @@ export class TextRangeCollection<T extends TextRange> {
     }
 
     getItemAt(index: number): T {
-        if (index < 0 || index >= this._items.length) {
+        if (index < 0 || index >= this.items.length) {
             throw new Error('index is out of range');
         }
-        return this._items[index];
+        return this.items[index];
     }
 
     // Returns the nearest item prior to the position.
@@ -66,12 +66,12 @@ export class TextRangeCollection<T extends TextRange> {
 
         while (min < max) {
             const mid = Math.floor(min + (max - min) / 2);
-            const item = this._items[mid];
+            const item = this.items[mid];
 
             // Is the position past the start of this item but before
             // the start of the next item? If so, we found our item.
             if (position >= item.start) {
-                if (mid >= this.count - 1 || position < this._items[mid + 1].start) {
+                if (mid >= this.count - 1 || position < this.items[mid + 1].start) {
                     return mid;
                 }
             }
@@ -96,7 +96,11 @@ export class TextRangeCollection<T extends TextRange> {
             return -1;
         }
 
-        return getIndexContaining(this._items, position);
+        return getIndexContaining(this.items, position);
+    }
+
+    copy() {
+        return new TextRangeCollection(this.items.map((v) => structuredClone(v)))
     }
 }
 

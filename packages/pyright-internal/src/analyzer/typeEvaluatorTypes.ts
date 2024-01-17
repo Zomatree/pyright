@@ -154,6 +154,9 @@ export const enum EvaluatorFlags {
     // Allow use of the Concatenate special form.
     AllowConcatenate = 1 << 27,
 
+    // Ignores propergation of errors.
+    IgnoreErrors = 1 << 28,
+
     // Defaults used for evaluating the LHS of a call expression.
     CallBaseDefaults = DoNotSpecialize,
 
@@ -615,6 +618,7 @@ export interface TypeEvaluator {
     getObjectType: () => Type;
     getNoneType: () => Type;
     getUnionClassType(): Type;
+    getIntersectionClassType(): Type;
     getTypingType: (node: ParseNode, symbolName: string) => Type | undefined;
     inferReturnTypeIfNecessary: (type: Type) => void;
     inferTypeParameterVarianceForClass: (type: ClassType) => void;
